@@ -9,5 +9,5 @@ export async function hydrateRedisSortedSet() {
       return { score: r.next_run_at, value: r.endpoint };
     })
   );
-  await RedisClient.set("key", "value");
+  return res;
 }
