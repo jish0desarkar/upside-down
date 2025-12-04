@@ -1,4 +1,5 @@
 import { createClient } from "redis";
+import { query } from "./db/client.ts";
 
 const client = createClient();
 
