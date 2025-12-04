@@ -31,11 +31,14 @@ export const up = (pgm) => {
       default: pgm.func("now()"),
     },
   });
-  pgm.createIndex("configs", ["endpoint"], { unique: true });
+  pgm.createIndex("configs", ["endpoint"], {
+    unique: true,
+    include: ["check_interval"],
+  });
   pgm.createFunction(
     "set_updated_at",
     [],
-    { returns: "trigger", language: "plpgsql" },
+    { returns: "trigger", language: "plpgsql", replace: true },
     `
     BEGIN
       NEW.updated_at = now();
@@ -58,5 +61,9 @@ export const up = (pgm) => {
  */
 export const down = (pgm) => {
   pgm.dropTrigger("configs", "update_updated_at_timestamp");
+  pgm.dropFunction("set_updated_at", []);
+  pgm.dropIndex("configs", ["endpoint"], {
+    name: "configs_endpoint_unique_index",
+  });
   pgm.dropTable("configs");
 };
