@@ -23,6 +23,9 @@ importers:
       dotenv:
         specifier: ^17.2.3
         version: 17.2.3
+      node-cron:
+        specifier: ^4.2.1
+        version: 4.2.1
       pg:
         specifier: ^8.16.3
         version: 8.16.3
@@ -45,9 +48,6 @@ importers:
       eslint:
         specifier: ^9.39.1
         version: 9.39.1
-      node-pg-migrate:
-        specifier: ^8.0.3
-        version: 8.0.3(@types/pg@8.15.6)(pg@8.16.3)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1409,6 +1409,10 @@ packages:
         optional: true
       sass:
         optional: true
+
+  node-cron@4.2.1:
+    resolution: {integrity: sha512-lgimEHPE/QDgFlywTd8yTR61ptugX3Qer29efeyWw2rv259HtGBNn1vZVmp8lB9uo9wC0t/AT4iGqXxia+CJFg==}
+    engines: {node: '>=6.0.0'}
 
   node-pg-migrate@8.0.3:
     resolution: {integrity: sha512-oKzZyzTULTryO1jehX19VnyPCGf3G/3oWZg3gODphvID56T0WjPOShTVPVnxGdlcueaIW3uAVrr7M8xLZq5TcA==}
@@ -3180,6 +3184,8 @@ snapshots:
     transitivePeerDependencies:
       - '@babel/core'
       - babel-plugin-macros
+
+  node-cron@4.2.1: {}
 
   node-pg-migrate@8.0.3(@types/pg@8.15.6)(pg@8.16.3):
     dependencies:

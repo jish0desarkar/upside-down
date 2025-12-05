@@ -1,7 +1,7 @@
 import { QueryResult } from "pg";
 import { query } from "../client.ts";
 
-type activeEnpointQueryType = {
+export type activeEnpointQueryType = {
   next_run_at: number;
   endpoint: string;
 };
