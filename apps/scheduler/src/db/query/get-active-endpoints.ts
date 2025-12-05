@@ -4,6 +4,7 @@ import { query } from "../client.ts";
 export type activeEnpointQueryType = {
   next_run_at: number;
   endpoint: string;
+  is_active: boolean;
 };
 
 export async function getActiveEndpoints(): Promise<

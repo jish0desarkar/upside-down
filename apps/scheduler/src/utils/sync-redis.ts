@@ -20,8 +20,14 @@ export async function syncRedis() {
       )
     ).rows;
   }
-  for (let i = 0; i < endpointsToBeSynced.length; i += BATCH_SIZE) {
-    const endpointSlice = endpointsToBeSynced.slice(i, i + BATCH_SIZE);
+  const activeEndpointTobeSynced = endpointsToBeSynced.filter(
+    (e) => e.is_active
+  );
+  const inactiveEndpointTobeDeleted = endpointsToBeSynced.filter(
+    (e) => !e.is_active
+  );
+  for (let i = 0; i < activeEndpointTobeSynced.length; i += BATCH_SIZE) {
+    const endpointSlice = activeEndpointTobeSynced.slice(i, i + BATCH_SIZE);
     await RedisClient.zAdd(
       "next_run_at",
       endpointSlice.map((el) => {
@@ -31,5 +37,8 @@ export async function syncRedis() {
         };
       })
     );
+  }
+  for (const e of inactiveEndpointTobeDeleted) {
+    await RedisClient.zRem("next_run_at", e.endpoint);
   }
 }
