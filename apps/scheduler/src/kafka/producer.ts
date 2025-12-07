@@ -13,6 +13,7 @@ const producer = new KafkaJS.Kafka().producer({
 await producer.connect();
 
 export async function kafkaPub(payload: Array<Message>) {
+  console.log("Publishing to Kafka", payload);
   await producer.send({
     topic: "monitoring.request",
     messages: payload,
