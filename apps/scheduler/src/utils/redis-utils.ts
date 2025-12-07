@@ -1,3 +1,4 @@
+import { query } from "../db/client.ts";
 import { getActiveEndpoints } from "../db/query/get-active-endpoints.ts";
 import { RedisClient } from "../redis/client.ts";
 
@@ -10,4 +11,26 @@ export async function hydrateRedisSortedSet() {
     })
   );
   return res;
+}
+
+export async function syncToRedis(params: Array<string>) {
+  const row = (
+    await query(
+      `SELECT endpoint, EXTRACT(epoch from (NOW() + check_interval))::bigint AS next_run_at
+      FROM configs WHERE endpoint = ANY ($1)`,
+      [params]
+    )
+  ).rows;
+  const multi = RedisClient.multi();
+  multi.zRem("next_run_at", params);
+  multi.zAdd(
+    "next_run_at",
+    row.map((r) => {
+      return {
+        score: r.next_run_at,
+        value: r.endpoint,
+      };
+    })
+  );
+  await multi.exec();
 }
