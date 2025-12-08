@@ -7,6 +7,7 @@ export type activeEnpointQueryType = {
   is_active: boolean;
 };
 
+// TODO: Maybe use FETCH with CURSOR?
 export async function getActiveEndpoints(): Promise<
   QueryResult<activeEnpointQueryType>
 > {
