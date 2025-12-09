@@ -1,3 +1,6 @@
-import { KafkaJS } from "@confluentinc/kafka-javascript/index.js";
+import { consume } from "./kafka/consumer.ts";
+import { configDotenv } from "dotenv";
 
-const consumer = new KafkaJS.Kafka().consumer({});
+configDotenv();
+
+await consume(["monitoring.request"]);

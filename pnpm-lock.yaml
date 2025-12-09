@@ -36,6 +36,9 @@ importers:
       eslint:
         specifier: ^9.39.1
         version: 9.39.1
+      kafka-javascript:
+        specifier: link:@types/@confluentinc/kafka-javascript
+        version: link:@types/@confluentinc/kafka-javascript
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
