@@ -10,12 +10,10 @@ export async function consume(topic: string[]) {
     "sasl.password": process.env.SASL_PASSWORD,
     "client.id": "ccloud-nodejs-client-4ae5f615-ffca-4124-b094-42f1a1d994ac",
     "auto.offset.reset": "latest",
-    kafkaJS: {
-      groupId: "probe-group-1",
-      heartbeatInterval: 5000, // 5s
-      autoCommit: true,
-      autoCommitInterval: 1000, // 1s
-    },
+    "group.id": "probe-group-1",
+    "heartbeat.interval.ms": 5000,
+    "enable.auto.commit": true,
+    "auto.commit.interval.ms": 10000,
   });
   process.on("SIGTERM", disconenct);
   process.on("SIGINT", disconenct);
