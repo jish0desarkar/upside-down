@@ -1,4 +1,5 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
+import { measureOnce } from "../check-endpoint.ts";
 
 export async function consume(topic: string[]) {
   // Graceful shutdown
@@ -29,6 +30,7 @@ export async function consume(topic: string[]) {
       console.log(
         `Consumed message from topic ${topic}, partition ${partition}: key = ${message?.key?.toString()}, value = ${message?.value?.toString()}`
       );
+      await measureOnce({ url: message.key!.toString() });
     },
   });
 }
