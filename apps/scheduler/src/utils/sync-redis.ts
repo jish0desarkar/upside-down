@@ -19,18 +19,14 @@ export async function syncRedis() {
     )
   ).rows;
 
-  const activeEndpointTobeSynced = endpointsToBeSynced.filter(
-    (r) => r.is_active
-  );
-  const inactiveEndpointTobeDeleted = endpointsToBeSynced.filter(
-    (r) => !r.is_active
-  );
+  const activeEndpoints = endpointsToBeSynced.filter((r) => r.is_active);
+  const inactiveEndpoints = endpointsToBeSynced.filter((r) => !r.is_active);
 
   const multi = RedisClient.multi();
-  if (activeEndpointTobeSynced.length > 0) {
-    console.log(activeEndpointTobeSynced);
-    for (let i = 0; i < activeEndpointTobeSynced.length; i += BATCH_SIZE) {
-      const endpointSlice = activeEndpointTobeSynced.slice(i, i + BATCH_SIZE);
+  if (activeEndpoints.length > 0) {
+    console.log(activeEndpoints);
+    for (let i = 0; i < activeEndpoints.length; i += BATCH_SIZE) {
+      const endpointSlice = activeEndpoints.slice(i, i + BATCH_SIZE);
       multi.zAdd(
         "next_run_at",
         endpointSlice.map((el) => {
@@ -42,8 +38,8 @@ export async function syncRedis() {
       );
     }
   }
-  if (inactiveEndpointTobeDeleted.length > 0) {
-    for (const e of inactiveEndpointTobeDeleted) {
+  if (inactiveEndpoints.length > 0) {
+    for (const e of inactiveEndpoints) {
       multi.zRem("next_run_at", e.endpoint);
     }
   }

@@ -30,13 +30,15 @@ export async function consume(topic: string[]) {
       console.log(
         `Consumed message from topic ${topic}, partition ${partition}: key = ${message?.key?.toString()}, value = ${message?.value?.toString()}`
       );
-      await measureOnce({ url: message.key!.toString() });
+
+      const response = await measureOnce({
+        url: message?.key?.toString() as string,
+      });
+      console.log(response);
     },
   });
 }
 
 function disconenct(consumer: KafkaJS.Consumer) {
-  consumer.commitOffsets().finally(() => {
-    consumer.disconnect();
-  });
+  consumer.commitOffsets();
 }

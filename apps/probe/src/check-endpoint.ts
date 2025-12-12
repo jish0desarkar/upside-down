@@ -1,8 +1,12 @@
 import http from "http";
 import https from "https";
-import { URL, fileURLToPath } from "url";
+import { URL } from "url";
 import zlib from "zlib";
 import fsPromises from "fs/promises";
+
+// ============================================================================
+// Configuration
+// ============================================================================
 
 export interface MonitorConfig {
   concurrency: number;
@@ -14,6 +18,28 @@ export interface MonitorConfig {
   keepAliveOptions: http.AgentOptions;
   logFile?: string | null;
 }
+
+export const DEFAULT_CONFIG: MonitorConfig = {
+  concurrency: 50,
+  requestTimeoutMs: 5000,
+  connectTimeoutMs: 2000,
+  maxBodySize: 2 * 1024 * 1024,
+  hostHotCountThreshold: 5,
+  hostHotCountWindowMs: 30_000,
+  keepAliveOptions: {
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 50,
+    maxFreeSockets: 10,
+  },
+  logFile: null,
+};
+
+let CONFIG = DEFAULT_CONFIG;
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export interface Message {
   url: string;
@@ -36,85 +62,337 @@ export interface MeasureResult {
   processing_latency_ms?: number;
 }
 
-export const CONFIG: MonitorConfig = {
-  concurrency: 50,
-  requestTimeoutMs: 5000,
-  connectTimeoutMs: 2000,
-  maxBodySize: 2 * 1024 * 1024, // 2MB
-  hostHotCountThreshold: 5,
-  hostHotCountWindowMs: 30_000,
-  keepAliveOptions: {
-    keepAlive: true,
-    keepAliveMsecs: 1000,
-    maxSockets: 50,
-    maxFreeSockets: 10,
-  },
-  logFile: null,
-};
+interface HostMetrics {
+  count: number;
+  firstSeen: number;
+}
 
-function nowMs(): number {
-  return Number(process.hrtime.bigint() / 1000000n);
+// ============================================================================
+// Time Utilities
+// ============================================================================
+
+function getCurrentTimeMs(): number {
+  return Date.now();
 }
-function hrDurationMs(startNanoseconds: bigint): number {
-  return Number((process.hrtime.bigint() - startNanoseconds) / 1000000n);
+
+function calculateDurationMs(startNanoseconds: bigint): number {
+  const elapsedNanoseconds = process.hrtime.bigint() - startNanoseconds;
+  return Number(elapsedNanoseconds / 1000000n);
 }
-function safeJson(obj: unknown): string {
+
+function safeJsonStringify(obj: unknown): string {
   try {
     return JSON.stringify(obj);
-  } catch (e) {
+  } catch {
     return String(obj);
   }
 }
 
+// ============================================================================
+// Agent Manager - Manages HTTP/HTTPS agents with connection pooling
+// ============================================================================
+
 class AgentManager {
   private httpAgents = new Map<string, http.Agent>();
   private httpsAgents = new Map<string, https.Agent>();
-  private hostCounts = new Map<string, { count: number; firstSeen: number }>();
+  private hostMetrics = new Map<string, HostMetrics>();
 
-  markHost(hostname: string): number {
-    const now = Date.now();
-    const rec = this.hostCounts.get(hostname) ?? { count: 0, firstSeen: now };
-    if (now - rec.firstSeen > CONFIG.hostHotCountWindowMs) {
-      rec.count = 1;
-      rec.firstSeen = now;
-    } else {
-      rec.count++;
-    }
-    this.hostCounts.set(hostname, rec);
-    return rec.count;
-  }
+  getAgentForUrl(url: URL): http.Agent | https.Agent | undefined {
+    const requestCount = this.trackHostRequest(url.hostname);
 
-  getAgentForUrl(urlObj: URL): http.Agent | https.Agent | undefined {
-    const hostname = urlObj.hostname;
-    const seen = this.markHost(hostname);
-
-    if (seen >= CONFIG.hostHotCountThreshold) {
-      const isHttps = urlObj.protocol === "https:";
-      const map = isHttps ? this.httpsAgents : this.httpAgents;
-      let agent = map.get(hostname);
-      if (!agent) {
-        agent = isHttps
-          ? new https.Agent(Object.assign({}, CONFIG.keepAliveOptions))
-          : new http.Agent(Object.assign({}, CONFIG.keepAliveOptions));
-        map.set(hostname, agent as any);
-      }
-      return agent;
+    if (this.shouldUseConnectionPool(requestCount)) {
+      return this.getOrCreateAgent(url);
     }
 
     return undefined;
   }
 
-  async destroyAll(): Promise<void> {
-    try {
-      for (const a of this.httpAgents.values()) a.destroy();
-      for (const a of this.httpsAgents.values()) a.destroy();
-    } finally {
-      this.httpAgents.clear();
-      this.httpsAgents.clear();
+  async destroyAllAgents(): Promise<void> {
+    this.destroyAgents(this.httpAgents);
+    this.destroyAgents(this.httpsAgents);
+    this.httpAgents.clear();
+    this.httpsAgents.clear();
+  }
+
+  private trackHostRequest(hostname: string): number {
+    const now = getCurrentTimeMs();
+    const metrics = this.getOrCreateHostMetrics(hostname, now);
+
+    if (this.isMetricsWindowExpired(metrics, now)) {
+      this.resetHostMetrics(metrics, now);
+    } else {
+      metrics.count++;
+    }
+
+    this.hostMetrics.set(hostname, metrics);
+    return metrics.count;
+  }
+
+  private getOrCreateHostMetrics(hostname: string, now: number): HostMetrics {
+    return this.hostMetrics.get(hostname) ?? { count: 0, firstSeen: now };
+  }
+
+  private isMetricsWindowExpired(metrics: HostMetrics, now: number): boolean {
+    return now - metrics.firstSeen > CONFIG.hostHotCountWindowMs;
+  }
+
+  private resetHostMetrics(metrics: HostMetrics, now: number): void {
+    metrics.count = 1;
+    metrics.firstSeen = now;
+  }
+
+  private shouldUseConnectionPool(requestCount: number): boolean {
+    return requestCount >= CONFIG.hostHotCountThreshold;
+  }
+
+  private getOrCreateAgent(url: URL): http.Agent | https.Agent {
+    const isHttps = url.protocol === "https:";
+    const agentMap = isHttps ? this.httpsAgents : this.httpAgents;
+
+    let agent = agentMap.get(url.hostname);
+    if (!agent) {
+      agent = this.createAgent(isHttps);
+      agentMap.set(url.hostname, agent as any);
+    }
+
+    return agent;
+  }
+
+  private createAgent(isHttps: boolean): http.Agent | https.Agent {
+    const options = { ...CONFIG.keepAliveOptions };
+    return isHttps ? new https.Agent(options) : new http.Agent(options);
+  }
+
+  private destroyAgents(agentMap: Map<string, any>): void {
+    for (const agent of agentMap.values()) {
+      agent.destroy();
     }
   }
 }
+
 export const agentManager = new AgentManager();
+
+// ============================================================================
+// HTTP Request Builder
+// ============================================================================
+
+class HttpRequestBuilder {
+  private url: URL;
+  private method: string;
+  private headers: Record<string, string>;
+  private agent?: http.Agent | https.Agent;
+
+  constructor(url: string, method: string, headers: Record<string, string>) {
+    this.url = new URL(url);
+    this.method = method.toUpperCase();
+    this.headers = this.buildHeaders(headers);
+    this.agent = agentManager.getAgentForUrl(this.url);
+  }
+
+  build(): http.RequestOptions {
+    return {
+      protocol: this.url.protocol,
+      hostname: this.url.hostname,
+      port: this.getPort(),
+      path: this.url.pathname + this.url.search,
+      method: this.method,
+      headers: this.headers,
+      agent: this.agent as any,
+    };
+  }
+
+  isHttps(): boolean {
+    return this.url.protocol === "https:";
+  }
+
+  private getPort(): number {
+    if (this.url.port) return parseInt(this.url.port);
+    return this.isHttps() ? 443 : 80;
+  }
+
+  private buildHeaders(
+    customHeaders: Record<string, string>
+  ): Record<string, string> {
+    return {
+      "accept-encoding": "gzip,deflate",
+      "user-agent": "downtime-monitor/1.0",
+      ...customHeaders,
+    };
+  }
+}
+
+// ============================================================================
+// Response Stream Handler
+// ============================================================================
+
+class ResponseStreamHandler {
+  private chunks: Buffer[] = [];
+  private totalBytes = 0;
+
+  handleChunk(
+    chunk: Buffer,
+    request: http.ClientRequest,
+    stream: NodeJS.ReadableStream
+  ): void {
+    this.totalBytes += chunk.length;
+
+    if (this.exceedsMaxSize()) {
+      this.abortStreams(request, stream);
+    } else {
+      this.chunks.push(chunk);
+    }
+  }
+
+  getBody(contentType: string): unknown {
+    const rawBody = Buffer.concat(this.chunks);
+    return this.parseBody(rawBody, contentType);
+  }
+
+  private exceedsMaxSize(): boolean {
+    return this.totalBytes > CONFIG.maxBodySize;
+  }
+
+  private abortStreams(
+    request: http.ClientRequest,
+    stream: NodeJS.ReadableStream
+  ): void {
+    request.destroy(new Error("EMAX_BODY_SIZE"));
+    this.destroyStream(stream);
+  }
+
+  private destroyStream(stream: any): void {
+    if (typeof stream.destroy === "function") {
+      stream.destroy();
+    } else if (typeof stream.cancel === "function") {
+      stream.cancel();
+    }
+  }
+
+  private parseBody(rawBody: Buffer, contentType: string): unknown {
+    const bodyText = rawBody.toString("utf8");
+
+    if (this.isJsonContent(contentType)) {
+      return this.tryParseJson(bodyText);
+    }
+
+    return bodyText;
+  }
+
+  private isJsonContent(contentType: string): boolean {
+    return contentType.toLowerCase().includes("application/json");
+  }
+
+  private tryParseJson(text: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+}
+
+// ============================================================================
+// Timeout Manager
+// ============================================================================
+
+class TimeoutManager {
+  private overallTimeout: NodeJS.Timeout | null = null;
+  private connectTimeout: NodeJS.Timeout | null = null;
+  private responseTimeout: NodeJS.Timeout | null = null;
+
+  setOverallTimeout(ms: number, abortController: AbortController): void {
+    this.overallTimeout = setTimeout(() => {
+      try {
+        abortController.abort();
+      } catch {}
+    }, ms);
+  }
+
+  setConnectTimeout(ms: number, abortController: AbortController): void {
+    this.connectTimeout = setTimeout(() => {
+      try {
+        abortController.abort();
+      } catch {}
+    }, ms);
+  }
+
+  setResponseTimeout(ms: number, request: http.ClientRequest): void {
+    this.responseTimeout = setTimeout(() => {
+      request.destroy(new Error("ERESPONSE_TIMEOUT"));
+    }, ms);
+  }
+
+  clearConnectTimeout(): void {
+    if (this.connectTimeout) {
+      clearTimeout(this.connectTimeout);
+      this.connectTimeout = null;
+    }
+  }
+
+  clearResponseTimeout(): void {
+    if (this.responseTimeout) {
+      clearTimeout(this.responseTimeout);
+      this.responseTimeout = null;
+    }
+  }
+
+  clearAllTimeouts(): void {
+    this.clearConnectTimeout();
+    this.clearResponseTimeout();
+
+    if (this.overallTimeout) {
+      clearTimeout(this.overallTimeout);
+      this.overallTimeout = null;
+    }
+  }
+}
+
+// ============================================================================
+// Error Mapper
+// ============================================================================
+
+function mapErrorCode(error: any): string {
+  const code = error.code || error.message || "UNKNOWN";
+
+  const errorMap: Record<string, string> = {
+    ECONNREFUSED: "ECONNREFUSED",
+    ENOTFOUND: "DNS_NOT_FOUND",
+    ERESPONSE_TIMEOUT: "TIMEOUT",
+    ESOCKET_TIMEOUT: "TIMEOUT",
+    EMAX_BODY_SIZE: "MAX_BODY_EXCEEDED",
+    ABORTED: "ABORTED",
+  };
+
+  return errorMap[code] || code;
+}
+
+// ============================================================================
+// Response Handler
+// ============================================================================
+
+function createDecompressionStream(
+  response: http.IncomingMessage
+): NodeJS.ReadableStream {
+  const encoding = (response.headers["content-encoding"] || "").toLowerCase();
+
+  if (encoding === "gzip" || encoding === "x-gzip") {
+    return response.pipe(zlib.createGunzip());
+  }
+
+  if (encoding === "deflate") {
+    return response.pipe(zlib.createInflate());
+  }
+
+  return response;
+}
+
+function isSuccessStatus(statusCode?: number): boolean {
+  return statusCode !== undefined && statusCode >= 200 && statusCode < 300;
+}
+
+// ============================================================================
+// Main Measurement Function
+// ============================================================================
 
 export async function measureOnce(opts: {
   url: string;
@@ -130,297 +408,179 @@ export async function measureOnce(opts: {
     timeoutMs = CONFIG.requestTimeoutMs,
     externalSignal,
   } = opts;
-  if (!url) throw new Error("url required");
 
-  const urlObj = new URL(url);
-  const isHttps = urlObj.protocol === "https:";
-  const lib = isHttps ? https : http;
-
-  const agent = agentManager.getAgentForUrl(urlObj);
-
-  const reqOpts: http.RequestOptions = {
-    protocol: urlObj.protocol,
-    hostname: urlObj.hostname,
-    port: urlObj.port || (isHttps ? 443 : 80),
-    path: urlObj.pathname + urlObj.search,
-    method: method.toUpperCase(),
-    headers: Object.assign(
-      {
-        "accept-encoding": "gzip,deflate",
-        "user-agent": "downtime-monitor/1.0",
-      },
-      headers
-    ),
-    agent: agent as any | undefined,
-  };
-
-  // local controller to combine externalSignal + local timeouts
-  const localController = new AbortController();
-  const controller = localController;
-  const signal = controller.signal;
-
-  if (externalSignal) {
-    if (externalSignal.aborted) controller.abort();
-    else
-      externalSignal.addEventListener("abort", () => controller.abort(), {
-        once: true,
-      });
+  if (!url) {
+    throw new Error("url required");
   }
 
-  const startNs = process.hrtime.bigint();
+  const requestBuilder = new HttpRequestBuilder(url, method, headers);
+  const requestOptions = requestBuilder.build();
+  const httpLib = requestBuilder.isHttps() ? https : http;
 
-  return await new Promise<MeasureResult>((resolve) => {
-    let overallTimeout: NodeJS.Timeout | null = null;
-    let connectTimeout: NodeJS.Timeout | null = null;
-    let responseTimer: NodeJS.Timeout | null = null;
+  const abortController = createAbortController(externalSignal);
+  const startTime = process.hrtime.bigint();
 
-    overallTimeout = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch (e) {}
-    }, timeoutMs);
+  return new Promise<MeasureResult>((resolve) => {
+    const timeoutManager = new TimeoutManager();
+    timeoutManager.setOverallTimeout(timeoutMs, abortController);
+    timeoutManager.setConnectTimeout(CONFIG.connectTimeoutMs, abortController);
 
-    connectTimeout = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch (e) {}
-    }, CONFIG.connectTimeoutMs);
-
-    const req = lib.request(reqOpts, (res) => {
-      if (connectTimeout) {
-        clearTimeout(connectTimeout);
-        connectTimeout = null;
-      }
-
-      responseTimer = setTimeout(() => {
-        req.destroy(new Error("ERESPONSE_TIMEOUT"));
-      }, timeoutMs);
-
-      let stream: NodeJS.ReadableStream = res;
-      const encoding = (
-        (res.headers["content-encoding"] || "") as string
-      ).toLowerCase();
-      if (encoding === "gzip" || encoding === "x-gzip")
-        stream = stream.pipe(zlib.createGunzip());
-      else if (encoding === "deflate")
-        stream = stream.pipe(zlib.createInflate());
-
-      const chunks: Buffer[] = [];
-      let bytes = 0;
-      stream.on("data", (chunk: Buffer) => {
-        bytes += chunk.length;
-        if (bytes > CONFIG.maxBodySize) {
-          req.destroy(new Error("EMAX_BODY_SIZE"));
-          if (typeof (stream as any).destroy === "function") {
-            (stream as any).destroy();
-          } else if (typeof (stream as any).cancel === "function") {
-            (stream as any).cancel();
-          }
-        } else {
-          chunks.push(chunk);
-        }
-      });
-
-      stream.on("end", () => {
-        if (responseTimer) {
-          clearTimeout(responseTimer);
-          responseTimer = null;
-        }
-        if (overallTimeout) {
-          clearTimeout(overallTimeout);
-          overallTimeout = null;
-        }
-        const duration = hrDurationMs(startNs);
-        const rawBody = Buffer.concat(chunks);
-        let body: unknown = undefined;
-        const ctype = (
-          (res.headers["content-type"] || "") as string
-        ).toLowerCase();
-        if (ctype.includes("application/json")) {
-          try {
-            body = JSON.parse(rawBody.toString("utf8"));
-          } catch (e) {
-            body = rawBody.toString("utf8");
-          }
-        } else {
-          body = rawBody.toString("utf8");
-        }
-
-        const result: MeasureResult = {
-          ok:
-            res.statusCode !== undefined &&
-            res.statusCode >= 200 &&
-            res.statusCode < 300,
-          url,
-          timestamp: Date.now(),
-          duration_ms: duration,
-          status: res.statusCode,
-          statusText: res.statusMessage,
-          headers: res.headers,
-          body,
-        };
-        resolve(result);
-      });
-
-      stream.on("error", (err) => {
-        if (responseTimer) {
-          clearTimeout(responseTimer);
-          responseTimer = null;
-        }
-        if (overallTimeout) {
-          clearTimeout(overallTimeout);
-          overallTimeout = null;
-        }
-        const duration = hrDurationMs(startNs);
-        resolve({
-          ok: false,
-          url,
-          timestamp: Date.now(),
-          duration_ms: duration,
-          error: (err as any).code || (err as Error).message || "STREAM_ERROR",
-          rawError: err,
-        });
-      });
-    });
-
-    req.on("socket", (socket: any) => {
-      socket.once("connect", () => {
-        if (connectTimeout) {
-          clearTimeout(connectTimeout);
-          connectTimeout = null;
-        }
-      });
-      socket.setTimeout(timeoutMs, () =>
-        req.destroy(new Error("ESOCKET_TIMEOUT"))
+    const request = httpLib.request(requestOptions, (response) => {
+      handleResponse(
+        response,
+        request,
+        url,
+        startTime,
+        timeoutMs,
+        timeoutManager,
+        resolve
       );
     });
 
-    signal.addEventListener("abort", () => {
-      req.destroy(new Error("ABORTED"));
-    });
+    setupRequestHandlers(
+      request,
+      url,
+      startTime,
+      timeoutMs,
+      abortController,
+      timeoutManager,
+      resolve
+    );
 
-    req.on("error", (err) => {
-      if (connectTimeout) {
-        clearTimeout(connectTimeout);
-        connectTimeout = null;
-      }
-      if (overallTimeout) {
-        clearTimeout(overallTimeout);
-        overallTimeout = null;
-      }
-      if (responseTimer) {
-        clearTimeout(responseTimer);
-        responseTimer = null;
-      }
-      const duration = hrDurationMs(startNs);
-
-      const code = (err as any).code || (err as Error).message || "UNKNOWN";
-      let mapped = code as string;
-      if (code === "ECONNREFUSED") mapped = "ECONNREFUSED";
-      else if (code === "ENOTFOUND") mapped = "DNS_NOT_FOUND";
-      else if (code === "ERESPONSE_TIMEOUT" || code === "ESOCKET_TIMEOUT")
-        mapped = "TIMEOUT";
-      else if (code === "EMAX_BODY_SIZE") mapped = "MAX_BODY_EXCEEDED";
-      else if (code === "ABORTED") mapped = "ABORTED";
-
-      resolve({
-        ok: false,
-        url,
-        timestamp: Date.now(),
-        duration_ms: duration,
-        error: mapped,
-        rawError: err,
-      });
-    });
-
-    req.end();
+    request.end();
   });
 }
 
-export class WorkerPool {
-  private concurrency: number;
-  private running = new Set<Promise<void>>();
-  private stopping = false;
-  private inFlightControllers = new Set<AbortController>();
+function createAbortController(externalSignal?: AbortSignal): AbortController {
+  const controller = new AbortController();
 
-  constructor(concurrency = CONFIG.concurrency) {
-    this.concurrency = concurrency;
-  }
-
-  async run(sourceAsyncIterable: AsyncIterable<Message>): Promise<void> {
-    const iter = sourceAsyncIterable[Symbol.asyncIterator]();
-    const launchers: Promise<void>[] = [];
-    for (let i = 0; i < this.concurrency; i++) {
-      launchers.push(this._workerLoop(iter));
-    }
-    await Promise.all(launchers);
-  }
-
-  private async _workerLoop(iter: AsyncIterator<Message>): Promise<void> {
-    while (!this.stopping) {
-      let next: IteratorResult<Message>;
-      try {
-        next = await iter.next();
-      } catch (err) {
-        console.error("Source iterator error:", err);
-        break;
-      }
-      if (next.done) break;
-      const msg = next.value;
-      const p = this._processMessage(msg)
-        .catch((e) => console.error("Processing error", e))
-        .finally(() => this.running.delete(p));
-      this.running.add(p);
-    }
-    await Promise.all(Array.from(this.running));
-  }
-
-  private async _processMessage(msg: Message): Promise<void> {
-    if (!msg || !msg.url) return;
-    const start = nowMs();
-    const externalController = new AbortController();
-    this.inFlightControllers.add(externalController);
-
-    try {
-      const result = await measureOnce({
-        url: msg.url,
-        method: msg.method || "GET",
-        headers: msg.headers || {},
-        timeoutMs: msg.timeoutMs || CONFIG.requestTimeoutMs,
-        externalSignal: externalController.signal,
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", () => controller.abort(), {
+        once: true,
       });
-      result.processing_latency_ms = nowMs() - start;
-      await sinkResult(result);
-    } finally {
-      this.inFlightControllers.delete(externalController);
     }
   }
 
-  async stop(): Promise<void> {
-    this.stopping = true;
-    for (const c of Array.from(this.inFlightControllers)) {
-      try {
-        c.abort();
-      } catch {
-        /* ignore */
-      }
-    }
-    await Promise.all(Array.from(this.running));
-  }
+  return controller;
 }
 
-export async function sinkResult(result: MeasureResult): Promise<void> {
-  const line = safeJson(result);
+function handleResponse(
+  response: http.IncomingMessage,
+  request: http.ClientRequest,
+  url: string,
+  startTime: bigint,
+  timeoutMs: number,
+  timeoutManager: TimeoutManager,
+  resolve: (result: MeasureResult) => void
+): void {
+  timeoutManager.clearConnectTimeout();
+  timeoutManager.setResponseTimeout(timeoutMs, request);
+
+  const stream = createDecompressionStream(response);
+  const streamHandler = new ResponseStreamHandler();
+
+  stream.on("data", (chunk: Buffer) => {
+    streamHandler.handleChunk(chunk, request, stream);
+  });
+
+  stream.on("end", () => {
+    timeoutManager.clearAllTimeouts();
+    const result = createSuccessResult(response, url, startTime, streamHandler);
+    resolve(result);
+  });
+
+  stream.on("error", (error) => {
+    timeoutManager.clearAllTimeouts();
+    const result = createErrorResult(url, startTime, error);
+    resolve(result);
+  });
+}
+
+function setupRequestHandlers(
+  request: http.ClientRequest,
+  url: string,
+  startTime: bigint,
+  timeoutMs: number,
+  abortController: AbortController,
+  timeoutManager: TimeoutManager,
+  resolve: (result: MeasureResult) => void
+): void {
+  request.on("socket", (socket: any) => {
+    socket.once("connect", () => timeoutManager.clearConnectTimeout());
+    socket.setTimeout(timeoutMs, () =>
+      request.destroy(new Error("ESOCKET_TIMEOUT"))
+    );
+  });
+
+  abortController.signal.addEventListener("abort", () => {
+    request.destroy(new Error("ABORTED"));
+  });
+
+  request.on("error", (error) => {
+    timeoutManager.clearAllTimeouts();
+    const result = createErrorResult(url, startTime, error);
+    resolve(result);
+  });
+}
+
+function createSuccessResult(
+  response: http.IncomingMessage,
+  url: string,
+  startTime: bigint,
+  streamHandler: ResponseStreamHandler
+): MeasureResult {
+  const contentType = (response.headers["content-type"] || "") as string;
+
+  return {
+    ok: isSuccessStatus(response.statusCode),
+    url,
+    timestamp: getCurrentTimeMs(),
+    duration_ms: calculateDurationMs(startTime),
+    status: response.statusCode,
+    statusText: response.statusMessage,
+    headers: response.headers,
+    body: streamHandler.getBody(contentType),
+  };
+}
+
+function createErrorResult(
+  url: string,
+  startTime: bigint,
+  error: any
+): MeasureResult {
+  return {
+    ok: false,
+    url,
+    timestamp: getCurrentTimeMs(),
+    duration_ms: calculateDurationMs(startTime),
+    error: mapErrorCode(error),
+    rawError: error,
+  };
+}
+
+// ============================================================================
+// Result Sink
+// ============================================================================
+
+export async function writeResult(result: MeasureResult): Promise<void> {
+  const jsonLine = safeJsonStringify(result);
+
   if (CONFIG.logFile) {
-    await fsPromises.appendFile(CONFIG.logFile, line + "\n");
+    await fsPromises.appendFile(CONFIG.logFile, jsonLine + "\n");
   } else {
-    console.log(line);
+    console.log(jsonLine);
   }
 }
+
+// ============================================================================
+// Exports
+// ============================================================================
 
 export default {
   measureOnce,
-  WorkerPool,
   agentManager,
   CONFIG,
 };
