@@ -4,13 +4,16 @@ import { RedisClient } from "../redis/client.ts";
 
 export async function hydrateRedisSortedSet() {
   const rows = (await getActiveEndpoints()).rows;
-  const res = await RedisClient.zAdd(
-    "next_run_at",
-    rows.map((r) => {
-      return { score: r.next_run_at, value: r.endpoint };
-    })
-  );
-  return res;
+  if (rows.length > 0) {
+    const res = await RedisClient.zAdd(
+      "next_run_at",
+      rows.map((r) => {
+        return { score: r.next_run_at, value: r.endpoint };
+      })
+    );
+    return res;
+  }
+  return 0;
 }
 
 export async function syncToRedis(params: Array<string>) {

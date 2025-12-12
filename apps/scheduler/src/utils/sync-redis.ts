@@ -5,10 +5,11 @@ import { hydrateRedisSortedSet } from "./redis-utils.ts";
 
 export async function syncRedis() {
   const BATCH_SIZE = 10;
-  const lastSyncedAt = await RedisClient.get("lastSynedAt");
+  const lastSyncedAt = await RedisClient.get("lastSyncedAt");
 
-  if (lastSyncedAt == null) {
+  if (!lastSyncedAt) {
     await hydrateRedisSortedSet();
+    await RedisClient.set("lastSyncedAt", new Date().toISOString());
   }
 
   const endpointsToBeSynced = (
@@ -19,24 +20,34 @@ export async function syncRedis() {
   ).rows;
 
   const activeEndpointTobeSynced = endpointsToBeSynced.filter(
-    (e) => e.is_active
+    (r) => r.is_active
   );
   const inactiveEndpointTobeDeleted = endpointsToBeSynced.filter(
-    (e) => !e.is_active
+    (r) => !r.is_active
   );
-  for (let i = 0; i < activeEndpointTobeSynced.length; i += BATCH_SIZE) {
-    const endpointSlice = activeEndpointTobeSynced.slice(i, i + BATCH_SIZE);
-    await RedisClient.zAdd(
-      "next_run_at",
-      endpointSlice.map((el) => {
-        return {
-          score: el.next_run_at,
-          value: el.endpoint,
-        };
-      })
-    );
+
+  const multi = RedisClient.multi();
+  if (activeEndpointTobeSynced.length > 0) {
+    console.log(activeEndpointTobeSynced);
+    for (let i = 0; i < activeEndpointTobeSynced.length; i += BATCH_SIZE) {
+      const endpointSlice = activeEndpointTobeSynced.slice(i, i + BATCH_SIZE);
+      multi.zAdd(
+        "next_run_at",
+        endpointSlice.map((el) => {
+          return {
+            score: el.next_run_at,
+            value: el.endpoint,
+          };
+        })
+      );
+    }
   }
-  for (const e of inactiveEndpointTobeDeleted) {
-    await RedisClient.zRem("next_run_at", e.endpoint);
+  if (inactiveEndpointTobeDeleted.length > 0) {
+    for (const e of inactiveEndpointTobeDeleted) {
+      multi.zRem("next_run_at", e.endpoint);
+    }
   }
+
+  multi.set("lastSyncedAt", new Date().toISOString());
+  await multi.exec();
 }
