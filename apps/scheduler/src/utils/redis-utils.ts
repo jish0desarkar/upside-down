@@ -20,7 +20,7 @@ export async function syncToRedis(params: Array<string>) {
   const row = (
     await query(
       `SELECT endpoint, EXTRACT(epoch from (NOW() + check_interval))::bigint AS next_run_at
-      FROM configs WHERE endpoint = ANY ($1)`,
+      FROM configs WHERE is_active = true AND endpoint = ANY ($1)`,
       [params]
     )
   ).rows;

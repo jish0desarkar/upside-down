@@ -437,7 +437,7 @@ export async function measureOnce(opts: {
       );
     });
 
-    setupRequestHandlers(
+    setupConnectionHandler(
       request,
       url,
       startTime,
@@ -499,7 +499,7 @@ function handleResponse(
   });
 }
 
-function setupRequestHandlers(
+function setupConnectionHandler(
   request: http.ClientRequest,
   url: string,
   startTime: bigint,
@@ -509,6 +509,7 @@ function setupRequestHandlers(
   resolve: (result: MeasureResult) => void
 ): void {
   request.on("socket", (socket: any) => {
+    // TODO: Measure connect timeout
     socket.once("connect", () => timeoutManager.clearConnectTimeout());
     socket.setTimeout(timeoutMs, () =>
       request.destroy(new Error("ESOCKET_TIMEOUT"))
@@ -542,7 +543,6 @@ function createSuccessResult(
     status: response.statusCode,
     statusText: response.statusMessage,
     headers: response.headers,
-    body: streamHandler.getBody(contentType),
   };
 }
 
