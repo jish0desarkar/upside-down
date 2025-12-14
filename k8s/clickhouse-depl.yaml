@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse-depl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: "clickhouse"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8123
+          volumeMounts:
+            - mountPath: /var/lib/clickhouse
+              name: clickhousedata
+      volumes:
+        - name: clickhousedata
+          persistentVolumeClaim:
+            claimName: clickhouse-volume-claim
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ch-srv
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: ch-port
+      protocol: TCP
+      port: 8123 # service port
+      targetPort: 8123 # app port
+
