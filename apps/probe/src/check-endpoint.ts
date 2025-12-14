@@ -387,7 +387,7 @@ function createDecompressionStream(
 }
 
 function isSuccessStatus(statusCode?: number): boolean {
-  return statusCode !== undefined && statusCode >= 200 && statusCode < 300;
+  return statusCode !== undefined && statusCode >= 200 && statusCode < 400;
 }
 
 // ============================================================================
@@ -426,6 +426,16 @@ export async function measureOnce(opts: {
     timeoutManager.setConnectTimeout(CONFIG.connectTimeoutMs, abortController);
 
     const request = httpLib.request(requestOptions, (response) => {
+      setupConnectionHandler(
+        request,
+        url,
+        startTime,
+        timeoutMs,
+        abortController,
+        timeoutManager,
+        resolve
+      );
+
       handleResponse(
         response,
         request,
@@ -436,17 +446,6 @@ export async function measureOnce(opts: {
         resolve
       );
     });
-
-    setupConnectionHandler(
-      request,
-      url,
-      startTime,
-      timeoutMs,
-      abortController,
-      timeoutManager,
-      resolve
-    );
-
     request.end();
   });
 }

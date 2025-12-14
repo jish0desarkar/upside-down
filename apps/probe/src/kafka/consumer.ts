@@ -1,5 +1,6 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { measureOnce } from "../check-endpoint.ts";
+import { kafkaPub } from "./producer.ts";
 
 export async function consume(topic: string[]) {
   // Graceful shutdown
@@ -34,7 +35,21 @@ export async function consume(topic: string[]) {
       const response = await measureOnce({
         url: message?.key?.toString() as string,
       });
-      console.log(response);
+      await kafkaPub([
+        {
+          key: response.url,
+          value: JSON.stringify({
+            event_time: response.timestamp,
+            probe_id: "default",
+            region: "local",
+            status_code: response.status,
+            success: response.ok,
+            latency_ms: response.duration_ms,
+            error_type: response.error,
+            error_message: response.rawError,
+          }),
+        },
+      ]);
     },
   });
 }
