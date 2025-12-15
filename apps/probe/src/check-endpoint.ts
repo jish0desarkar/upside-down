@@ -21,8 +21,8 @@ export interface MonitorConfig {
 
 export const DEFAULT_CONFIG: MonitorConfig = {
   concurrency: 50,
-  requestTimeoutMs: 5000,
-  connectTimeoutMs: 2000,
+  requestTimeoutMs: 30_000,
+  connectTimeoutMs: 5000,
   maxBodySize: 2 * 1024 * 1024,
   hostHotCountThreshold: 5,
   hostHotCountWindowMs: 30_000,

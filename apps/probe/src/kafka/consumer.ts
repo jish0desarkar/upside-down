@@ -1,6 +1,7 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { measureOnce } from "../check-endpoint.ts";
 import { kafkaPub } from "./producer.ts";
+import { Semaphore } from "../semaphore.ts";
 
 export async function consume(topic: string[]) {
   // Graceful shutdown
@@ -26,31 +27,39 @@ export async function consume(topic: string[]) {
   // subscribe to the topic
   await consumer.subscribe({ topics: topic });
 
+  // 10 concurrent requests
+  const sem = new Semaphore(10);
   consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
       console.log(
         `Consumed message from topic ${topic}, partition ${partition}: key = ${message?.key?.toString()}, value = ${message?.value?.toString()}`
       );
-
-      const response = await measureOnce({
-        url: message?.key?.toString() as string,
-      });
-      await kafkaPub([
-        {
-          key: response.url,
-          value: JSON.stringify({
-            event_time: response.timestamp,
-            probe_id: "default",
-            region: "local",
-            status_code: response.status,
-            success: response.ok,
-            latency_ms: response.duration_ms,
-            error_type: response.error,
-            error_message: response.rawError,
-            endpoint_id: message?.key?.toString(),
-          }),
-        },
-      ]);
+      await sem.acquire();
+      (async () => {
+        try {
+          const response = await measureOnce({
+            url: message?.key?.toString() as string,
+          });
+          await kafkaPub([
+            {
+              key: response.url,
+              value: JSON.stringify({
+                event_time: response.timestamp,
+                probe_id: "default",
+                region: "local",
+                status_code: response.status,
+                success: response.ok,
+                latency_ms: response.duration_ms,
+                error_type: response.error,
+                error_message: response.rawError,
+                endpoint_id: message?.key?.toString(),
+              }),
+            },
+          ]);
+        } finally {
+          sem.release();
+        }
+      })();
     },
   });
 }
