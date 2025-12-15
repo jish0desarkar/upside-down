@@ -18,7 +18,10 @@ export class Semaphore {
     // If slots are full, the next req waits here until the resolve is called
     // in the release function, backpressuring kafka polls
     await new Promise<void>((resolve) => {
-      this.waitQueue.push(resolve);
+      this.waitQueue.push(() => {
+        this.available--;
+        resolve();
+      });
     });
   }
 
