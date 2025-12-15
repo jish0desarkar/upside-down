@@ -17,7 +17,7 @@ await producer.connect();
 export async function kafkaPub(payload: Array<Message>) {
   console.log("Publishing to Kafka", payload);
   await producer.send({
-    topic: "monitor.response",
+    topic: "monitoring.response",
     messages: payload,
   });
 }

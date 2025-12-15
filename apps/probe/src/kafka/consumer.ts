@@ -47,6 +47,7 @@ export async function consume(topic: string[]) {
             latency_ms: response.duration_ms,
             error_type: response.error,
             error_message: response.rawError,
+            endpoint_id: message?.key?.toString(),
           }),
         },
       ]);

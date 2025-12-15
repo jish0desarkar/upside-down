@@ -363,7 +363,15 @@ function mapErrorCode(error: any): string {
     ABORTED: "ABORTED",
   };
 
-  return errorMap[code] || code;
+  const tcpErrorMap: Record<string, string> = {
+    DNS_ERROR: "DNS_ERROR",
+    ETIMEDOUT: "TCP_TIMEOUT",
+    EHOSTUNREACH: "HOST_UNREACHABLE",
+    TLS_ERROR: "TLS_ERROR",
+    HTTP_ERROR: "HTTP_ERROR",
+  };
+
+  return errorMap[code] || tcpErrorMap[code] || code;
 }
 
 // ============================================================================
@@ -424,18 +432,7 @@ export async function measureOnce(opts: {
     const timeoutManager = new TimeoutManager();
     timeoutManager.setOverallTimeout(timeoutMs, abortController);
     timeoutManager.setConnectTimeout(CONFIG.connectTimeoutMs, abortController);
-
     const request = httpLib.request(requestOptions, (response) => {
-      setupConnectionHandler(
-        request,
-        url,
-        startTime,
-        timeoutMs,
-        abortController,
-        timeoutManager,
-        resolve
-      );
-
       handleResponse(
         response,
         request,
@@ -446,6 +443,16 @@ export async function measureOnce(opts: {
         resolve
       );
     });
+
+    setupRequestHandlers(
+      request,
+      url,
+      startTime,
+      timeoutMs,
+      abortController,
+      timeoutManager,
+      resolve
+    );
     request.end();
   });
 }
@@ -498,7 +505,7 @@ function handleResponse(
   });
 }
 
-function setupConnectionHandler(
+function setupRequestHandlers(
   request: http.ClientRequest,
   url: string,
   startTime: bigint,
@@ -557,6 +564,7 @@ function createErrorResult(
     duration_ms: calculateDurationMs(startTime),
     error: mapErrorCode(error),
     rawError: error,
+    status: 599, // Mapped fake http error code
   };
 }
 
