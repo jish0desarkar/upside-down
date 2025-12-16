@@ -14,12 +14,13 @@ spec:
     spec:
       containers:
         - name: clickhouse
-          image: "clickhouse"
+          image: "clickhouse/clickhouse-server:25.11"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8123
           volumeMounts:
-            - mountPath: /var/lib/clickhouse
+            - mountPath: /var/lib/clickhouse/data
+              subPath: data
               name: clickhousedata
       volumes:
         - name: clickhousedata
