@@ -12,11 +12,10 @@ export async function consume(topic: string[]) {
     "sasl.username": process.env.SASL_USERNAME,
     "sasl.password": process.env.SASL_PASSWORD,
     "client.id": "ccloud-nodejs-client-4ae5f615-ffca-4124-b094-42f1a1d994ac",
-    "auto.offset.reset": "latest",
+    "auto.offset.reset": "largest",
     "group.id": "probe-group-1",
     "heartbeat.interval.ms": 5000,
-    "enable.auto.commit": true,
-    "auto.commit.interval.ms": 10000,
+    "enable.auto.commit": false,
   });
   process.on("SIGTERM", disconenct);
   process.on("SIGINT", disconenct);
@@ -28,7 +27,7 @@ export async function consume(topic: string[]) {
   await consumer.subscribe({ topics: topic });
 
   // 10 concurrent requests
-  const sem = new Semaphore(10);
+  const sem = new Semaphore(100);
   consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
       console.log(
@@ -54,6 +53,14 @@ export async function consume(topic: string[]) {
                 error_message: response.rawError,
                 endpoint_id: message?.key?.toString(),
               }),
+            },
+          ]);
+          console.log("COMMITTING OFFSET", message.offset);
+          await consumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (BigInt(message.offset) + 1n).toString(),
             },
           ]);
         } finally {
