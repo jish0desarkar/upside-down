@@ -26,7 +26,7 @@ export async function consume(topic: string[]) {
   // subscribe to the topic
   await consumer.subscribe({ topics: topic });
 
-  // 10 concurrent requests
+  // 20 concurrent requests
   const sem = new Semaphore(100);
   consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
@@ -63,6 +63,8 @@ export async function consume(topic: string[]) {
               offset: (BigInt(message.offset) + 1n).toString(),
             },
           ]);
+        } catch (e) {
+          console.error(e);
         } finally {
           sem.release();
         }
