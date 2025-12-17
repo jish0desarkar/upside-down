@@ -12,13 +12,11 @@ export class Semaphore {
   async acquire(): Promise<void> {
     if (this.available > 0) {
       this.available--;
-      console.log("SEMAPHORE AQUIRED, REMAINING: ", this.available);
       return;
     }
 
     // If slots are full, the next req waits here until the resolve is called
     // in the release function, backpressuring kafka polls
-    console.log("SEMAPHORE OVER, PUSHING TO QUEUE REMAINING: ", this.available);
     await new Promise<void>((resolve) => {
       this.waitQueue.push(() => {
         this.available--;

@@ -26,7 +26,7 @@ export async function consume(topic: string[]) {
   // subscribe to the topic
   await consumer.subscribe({ topics: topic });
 
-  // 20 concurrent requests
+  // 100 concurrent requests
   const sem = new Semaphore(100);
   consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
